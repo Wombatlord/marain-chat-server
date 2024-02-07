@@ -22,12 +22,7 @@ use futures_util::{
 };
 use log::info;
 use std::{
-    borrow::Cow,
-    char,
-    collections::HashMap,
-    env,
-    io::Error,
-    sync::{Arc, Mutex},
+    borrow::Cow, char, collections::HashMap, env, hash::Hash, io::Error, sync::{Arc, Mutex}
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{
@@ -40,7 +35,8 @@ use tokio_tungstenite::{
 
 use chrono::Utc;
 
-type RoomMap = Arc<Mutex<HashMap<String, Mutex<Vec<(User, UnboundedSender<Message>)>>>>>;
+// This should maybe be Arc<Mutex<Hashmap<String, Mutex<HashMap<User, UnboundedSender<Message>>>>>>
+type RoomMap = Arc<Mutex<HashMap<String, Mutex<HashMap<User, UnboundedSender<Message>>>>>>;
 use crate::user::User;
 
 #[tokio::main]
@@ -54,7 +50,7 @@ async fn main() -> Result<(), Error> {
     rooms
         .lock()
         .unwrap()
-        .insert(String::from("Global"), Mutex::new(vec![]));
+        .insert(String::from("Global"), Mutex::new(HashMap::new()));
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind");
@@ -73,7 +69,7 @@ async fn main() -> Result<(), Error> {
         let (cmd_sink, cmd_source) = unbounded::<Message>();
         let (msg_sink, msg_source) = unbounded::<Message>();
 
-        tokio::spawn(recv_routing(ws_source, user, cmd_sink, msg_sink));
+        tokio::spawn(recv_routing(ws_source, user, cmd_sink, msg_sink, rooms.clone()));
         tokio::spawn(commands(cmd_source, user, rooms.clone()));
         tokio::spawn(handle_global_messaging(
             ws_sink,
@@ -102,7 +98,7 @@ fn register_user(user: User, room: RoomMap) -> UnboundedReceiver<Message> {
         .unwrap()
         .lock()
         .unwrap()
-        .push((user, user_postbox));
+        .insert(user, user_postbox);
 
     user_inbox
 }
@@ -112,10 +108,14 @@ async fn recv_routing(
     user: User,
     command_pipe: UnboundedSender<Message>,
     message_pipe: UnboundedSender<Message>,
+    room_map: RoomMap,
 ) {
     let incoming = ws_source.try_for_each(|msg| {
         if msg.is_close() {
             info!("{} disconnecting", user.get_addr());
+            let rooms = room_map.lock().unwrap();
+            let mut members = rooms.get("Global").unwrap().lock().unwrap();
+            members.remove(&user);
         }
 
         if msg.is_binary() {
@@ -146,6 +146,7 @@ async fn commands(
         // let u = state.lock().unwrap();
         let room_map = room.lock().unwrap();
         let room_members = room_map.get("Global").unwrap().lock().unwrap();
+        
         let user = room_members
             .iter()
             .filter_map(|(u, c)| if u == &user { Some(c) } else { None })
@@ -157,7 +158,8 @@ async fn commands(
                 "/time" => {
                     let m = Message::Binary(Utc::now().to_string().as_bytes().to_vec());
                     user.unwrap().unbounded_send(m).unwrap();
-                }
+                },
+                "/mv" => {todo!("Room handler required? Pass User and cmd_str[1], lock mutex in that task to avoid mutable borrow after locks")},
                 _ => info!("non-implemented command"),
             }
         }
@@ -173,20 +175,26 @@ async fn handle_global_messaging(
 ) {
     loop {
         tokio::select! {
-            broadcast_msg = message.next() => {
+            broadcast_msg_from_usr = message.next() => {
                 let rooms = room_map.lock().unwrap();
                 let room_members = rooms.get("Global").unwrap().lock().unwrap();
                 let receipients = room_members
                     .iter()
-                    .filter_map(|(u, c)| if u != &user { Some(c) } else { None });
+                    .filter_map(|(mapped_user, channel)| if mapped_user != &user { Some(channel) } else { None });
                 
                 for receipient in receipients {
-                    receipient.unbounded_send(broadcast_msg.clone().unwrap()).unwrap()
+                    match broadcast_msg_from_usr.clone() {
+                        Some(m) => receipient.unbounded_send(m).unwrap(),
+                        None => {}
+                    }
                 }
             }
             
-            inbound_msg = user_inbox.next() => {
-                ws_sink.send(inbound_msg.clone().unwrap()).await.unwrap();
+            broacst_msg_to_usr = user_inbox.next() => {
+                match broacst_msg_to_usr.clone() {
+                    Some(m) => ws_sink.send(m).await.unwrap(),
+                    None => {}
+                }
             }
         }
     }
