@@ -2,31 +2,21 @@ mod handlers;
 mod user;
 use env_logger;
 use futures_channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
-use futures_util::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
+use futures_util::StreamExt;
 use handlers::{
     commands::command_handler, messages::global_message_handler,
     recv_routing::recv_routing_handler, rooms::room_handler,
 };
 use log::info;
 use std::{
-    borrow::Cow,
     collections::{hash_map::DefaultHasher, HashMap},
     env,
     hash::{Hash, Hasher},
     io::Error,
     sync::{Arc, Mutex},
 };
-use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{
-    tungstenite::{
-        protocol::{frame::coding::CloseCode, CloseFrame},
-        Message, Result,
-    },
-    WebSocketStream,
-};
+use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::{Message, Result};
 
 use crate::user::User;
 
