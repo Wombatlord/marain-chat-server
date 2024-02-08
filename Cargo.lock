@@ -437,6 +437,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
+name = "marain-chat-server"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "env_logger",
+ "futures-channel",
+ "futures-util",
+ "log",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1049,16 +1062,3 @@ name = "windows_x86_64_msvc"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dff9641d1cd4be8d1a070daf9e3773c5f67e78b4d9d42263020c057706765c04"
-
-[[package]]
-name = "ws-server"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "env_logger",
- "futures-channel",
- "futures-util",
- "log",
- "tokio",
- "tokio-tungstenite",
-]

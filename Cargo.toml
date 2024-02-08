@@ -1,5 +1,5 @@
 [package]
-name = "ws-server"
+name = "marain-chat-server"
 version = "0.1.0"
 edition = "2021"
 

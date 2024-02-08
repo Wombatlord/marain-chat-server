@@ -1,16 +1,3 @@
-//! A simple echo server.
-//!
-//! You can test this out by running:
-//!
-//!     cargo run --example echo-server 127.0.0.1:12345
-//!
-//! And then in another window run:
-//!
-//!     cargo run --example client ws://127.0.0.1:12345/
-//!
-//! Type a message into the client window, press enter to send it and
-//! see it echoed back.
-
 mod user;
 
 use env_logger;
@@ -22,7 +9,13 @@ use futures_util::{
 };
 use log::info;
 use std::{
-    borrow::Cow, char, collections::HashMap, env, hash::Hash, io::Error, sync::{Arc, Mutex}
+    borrow::Cow,
+    char,
+    collections::{hash_map::DefaultHasher, HashMap},
+    env,
+    hash::{Hash, Hasher},
+    io::Error,
+    sync::{Arc, Mutex},
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{
@@ -33,11 +26,11 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 
+use crate::user::User;
 use chrono::Utc;
 
-// This should maybe be Arc<Mutex<Hashmap<String, Mutex<HashMap<User, UnboundedSender<Message>>>>>>
-type RoomMap = Arc<Mutex<HashMap<String, Mutex<HashMap<User, UnboundedSender<Message>>>>>>;
-use crate::user::User;
+type PeerMap = Arc<Mutex<HashMap<u64, (Arc<Mutex<User>>, UnboundedSender<Message>)>>>;
+type RoomMap = Arc<Mutex<HashMap<u64, PeerMap>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -45,37 +38,66 @@ async fn main() -> Result<(), Error> {
     let addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:8080".to_string());
-
     let rooms = RoomMap::new(Mutex::new(HashMap::new()));
+
+    let mut hasher = DefaultHasher::new();
+    let global_room = String::from("hub");
+    global_room.hash(&mut hasher);
+    let global_room_hash = hasher.finish();
+
     rooms
         .lock()
         .unwrap()
-        .insert(String::from("Global"), Mutex::new(HashMap::new()));
+        .insert(global_room_hash, Arc::new(Mutex::new(HashMap::new())));
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind");
     info!("Listening on: {}", addr);
+    let mut i = 0u64;
     while let Ok((stream, _)) = listener.accept().await {
-        let user = User::new(stream.peer_addr()?);
+        let user = Arc::new(Mutex::new(User::new(
+            stream.peer_addr()?,
+            global_room_hash,
+            i,
+        )));
+        i += 1;
 
-        info!("TCP connection from: {}", user.get_addr().to_string());
+        info!(
+            "TCP connection from: {}",
+            user.lock().unwrap().get_addr().to_string()
+        );
         let ws_stream = tokio_tungstenite::accept_async(stream)
             .await
             .expect("Error during the websocket handshake occurred");
-        info!("Upgraded {} to websocket.", user.get_addr().to_string());
+        info!(
+            "Upgraded {} to websocket.",
+            user.lock().unwrap().get_addr().to_string()
+        );
         // you can do stuff here
-        let user_inbox = register_user(user, rooms.clone());
+        let user_inbox = register_user(user.clone(), rooms.clone(), global_room_hash);
         let (ws_sink, ws_source) = ws_stream.split();
         let (cmd_sink, cmd_source) = unbounded::<Message>();
         let (msg_sink, msg_source) = unbounded::<Message>();
-
-        tokio::spawn(recv_routing(ws_source, user, cmd_sink, msg_sink, rooms.clone()));
-        tokio::spawn(commands(cmd_source, user, rooms.clone()));
-        tokio::spawn(handle_global_messaging(
+        let (room_sink, room_source) = unbounded::<Message>();
+        tokio::spawn(recv_routing_handler(
+            ws_source,
+            user.clone(),
+            cmd_sink,
+            msg_sink,
+            rooms.clone(),
+        ));
+        tokio::spawn(command_handler(
+            cmd_source,
+            room_sink,
+            user.clone(),
+            rooms.clone(),
+        ));
+        tokio::spawn(room_handler(room_source, user.clone(), rooms.clone()));
+        tokio::spawn(global_message_handler(
             ws_sink,
             msg_source,
             rooms.clone(),
-            user,
+            user.clone(),
             user_inbox,
         ));
     }
@@ -83,8 +105,12 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn register_user(user: User, room: RoomMap) -> UnboundedReceiver<Message> {
-    // Creates a channel
+fn register_user(
+    user: Arc<Mutex<User>>,
+    room: RoomMap,
+    room_hash: u64,
+) -> UnboundedReceiver<Message> {
+    // Creates an unbounded futures_util::mpsc channel
     // Locks the RoomMap Mutex
     // Gets the "Global" room members Mutex<vec>
     // Locks the room members mutex and unwraps the vec
@@ -94,28 +120,32 @@ fn register_user(user: User, room: RoomMap) -> UnboundedReceiver<Message> {
     let (user_postbox, user_inbox) = unbounded::<Message>();
     room.lock()
         .unwrap()
-        .get("Global")
+        .get(&room_hash)
         .unwrap()
         .lock()
         .unwrap()
-        .insert(user, user_postbox);
+        .insert(user.lock().unwrap().id, (user.clone(), user_postbox));
 
     user_inbox
 }
 
-async fn recv_routing(
+async fn recv_routing_handler(
     ws_source: SplitStream<WebSocketStream<TcpStream>>,
-    user: User,
+    user: Arc<Mutex<User>>,
     command_pipe: UnboundedSender<Message>,
     message_pipe: UnboundedSender<Message>,
     room_map: RoomMap,
 ) {
     let incoming = ws_source.try_for_each(|msg| {
         if msg.is_close() {
-            info!("{} disconnecting", user.get_addr());
+            info!("{} disconnecting", user.lock().unwrap().get_addr());
             let rooms = room_map.lock().unwrap();
-            let mut members = rooms.get("Global").unwrap().lock().unwrap();
-            members.remove(&user);
+            let mut members = rooms
+                .get(&user.lock().unwrap().room)
+                .unwrap()
+                .lock()
+                .unwrap();
+            members.remove(&user.lock().unwrap().id);
         }
 
         if msg.is_binary() {
@@ -137,51 +167,129 @@ async fn recv_routing(
     incoming.await.unwrap();
 }
 
-async fn commands(
+async fn command_handler(
     mut cmd_source: UnboundedReceiver<Message>,
-    user: User,
+    room_sink: UnboundedSender<Message>,
+    user: Arc<Mutex<User>>,
     room: RoomMap,
 ) {
     while let Some(cmd) = cmd_source.next().await {
         // let u = state.lock().unwrap();
         let room_map = room.lock().unwrap();
-        let room_members = room_map.get("Global").unwrap().lock().unwrap();
-        
-        let user = room_members
+        println!("Room Map: {:#?}", room_map);
+        let room_members = room_map
+            .get(&user.lock().unwrap().room)
+            .unwrap()
+            .lock()
+            .unwrap();
+
+        let commander = room_members
             .iter()
-            .filter_map(|(u, c)| if u == &user { Some(c) } else { None })
-            .next();
+            .filter_map(|(u, c)| {
+                if u == &user.lock().unwrap().id {
+                    Some(c)
+                } else {
+                    None
+                }
+            })
+            .next()
+            .unwrap();
 
         if cmd.is_binary() {
             let cmd_str: Vec<&str> = cmd.to_text().unwrap().split(" ").collect();
             match cmd_str[0].trim() {
                 "/time" => {
                     let m = Message::Binary(Utc::now().to_string().as_bytes().to_vec());
-                    user.unwrap().unbounded_send(m).unwrap();
-                },
-                "/mv" => {todo!("Room handler required? Pass User and cmd_str[1], lock mutex in that task to avoid mutable borrow after locks")},
-                _ => info!("non-implemented command"),
+                    // commander.unwrap().unbounded_send(m).unwrap();
+                    commander.1.unbounded_send(m).unwrap()
+                }
+                "/mv" => room_sink
+                    .unbounded_send(Message::Binary(cmd_str[1].trim().as_bytes().to_vec()))
+                    .unwrap(),
+                "/rms" => {
+                    println!("Occupants: {:#?}", room_members);
+                }
+                "/crm" => {
+                    println!("{:}", user.lock().unwrap().room);
+                }
+                _ => commander
+                    .1
+                    .unbounded_send(Message::Binary("No such command".as_bytes().to_vec()))
+                    .unwrap(),
             }
         }
     }
 }
 
-async fn handle_global_messaging(
+async fn room_handler(
+    mut room_source: UnboundedReceiver<Message>,
+    mut user: Arc<Mutex<User>>,
+    room_map: RoomMap,
+) {
+    while let Some(cmd) = room_source.next().await {
+        let mut hasher = DefaultHasher::new();
+        cmd.to_text().unwrap().to_string().hash(&mut hasher);
+        let room_hash = hasher.finish();
+        info!("room handler");
+        let mut rooms = room_map.lock().unwrap();
+        if rooms.contains_key(&room_hash) {
+            let mut u = rooms
+                .iter()
+                .filter_map(|(_, y)| y.lock().unwrap().remove_entry(&user.lock().unwrap().id))
+                .next()
+                .unwrap();
+            user.lock().unwrap().room = room_hash;
+            let _ = rooms
+                .get(&room_hash)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .insert(user.lock().unwrap().id, (user.clone(), u.1.1));
+        } else {
+            info!("attempting to create new room");
+            rooms.insert(room_hash, Arc::new(Mutex::new(HashMap::new())));
+            let mut u = rooms
+                .iter()
+                .filter_map(|(_, y)| y.lock().unwrap().remove_entry(&user.lock().unwrap().id))
+                .next()
+                .unwrap();
+            println!("!USER! {:?}", user.lock().unwrap().room);
+            user.lock().unwrap().room = room_hash;
+            println!("!USER CHANGED! {:?}", user.lock().unwrap().room);
+            let _ = rooms
+                .get(&room_hash)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .insert(user.lock().unwrap().id, (user.clone(), u.1.1));
+            println!("{:#?}", &rooms);
+        }
+    }
+}
+
+async fn global_message_handler(
     mut ws_sink: SplitSink<WebSocketStream<TcpStream>, Message>,
     mut message: UnboundedReceiver<Message>,
     room_map: RoomMap,
-    user: User,
+    user: Arc<Mutex<User>>,
     mut user_inbox: UnboundedReceiver<Message>,
 ) {
     loop {
         tokio::select! {
             broadcast_msg_from_usr = message.next() => {
+                if broadcast_msg_from_usr == None {
+                    break
+                }
                 let rooms = room_map.lock().unwrap();
-                let room_members = rooms.get("Global").unwrap().lock().unwrap();
-                let receipients = room_members
+                let room = rooms.get(&user.lock().unwrap().room).unwrap().lock().unwrap();
+                info!("Sender Room: {}", user.lock().unwrap().room);
+                info!("Sender: {:#?}", user);
+                println!("Sender Peers: {room:#?}");
+                let receipients = room
                     .iter()
-                    .filter_map(|(mapped_user, channel)| if mapped_user != &user { Some(channel) } else { None });
-                
+                    .filter_map(|(mapped_user_id, (mapped_user, channel))| if mapped_user_id != &user.lock().unwrap().id { Some(channel) } else { None });
+
+
                 for receipient in receipients {
                     match broadcast_msg_from_usr.clone() {
                         Some(m) => receipient.unbounded_send(m).unwrap(),
@@ -189,7 +297,7 @@ async fn handle_global_messaging(
                     }
                 }
             }
-            
+
             broacst_msg_to_usr = user_inbox.next() => {
                 match broacst_msg_to_usr.clone() {
                     Some(m) => ws_sink.send(m).await.unwrap(),
@@ -198,7 +306,6 @@ async fn handle_global_messaging(
             }
         }
     }
-
 }
 
 async fn determine_response(
