@@ -6,14 +6,16 @@ use super::types::PeerMap;
 
 pub struct Room {
     pub occupants: PeerMap,
-    pub message_bus: Arc<Mutex<VecDeque<Message>>>
+    pub message_bus: Arc<Mutex<VecDeque<Message>>>,
+    pub bus_max: usize,
 }
 
 impl Room {
     pub fn new(occupants: PeerMap, message_bus: Arc<Mutex<VecDeque<Message>>>) -> Self {
         Room {
             occupants,
-            message_bus
+            message_bus,
+            bus_max: 25
         }
     }
 

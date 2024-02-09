@@ -3,6 +3,7 @@ extern crate marain_chat_server;
 use env_logger;
 use futures_channel::mpsc::{unbounded, UnboundedReceiver};
 use futures_util::StreamExt;
+use log::info;
 use marain_chat_server::{
     domain::{room::Room, types::RoomMap, user::User},
     handlers::{
@@ -10,8 +11,6 @@ use marain_chat_server::{
         recv_routing::recv_routing_handler, rooms::room_handler,
     },
 };
-
-use log::info;
 use std::{
     collections::{hash_map::DefaultHasher, HashMap, VecDeque},
     env,
@@ -21,6 +20,7 @@ use std::{
 };
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::{Message, Result};
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -43,34 +43,29 @@ async fn main() -> Result<(), Error> {
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind");
     info!("Listening on: {}", addr);
-    let mut i = 0u64;
-    while let Ok((stream, _)) = listener.accept().await {
-        let user = Arc::new(Mutex::new(User::new(
-            stream.peer_addr()?,
-            global_room_hash,
-            i,
-            false,
-        )));
-        i += 1;
 
-        info!(
-            "TCP connection from: {}",
-            user.lock().unwrap().get_addr().to_string()
-        );
+    while let Ok((stream, _)) = listener.accept().await {
+        let user_addr = stream.peer_addr().unwrap().to_string().clone();
         let ws_stream = tokio_tungstenite::accept_async(stream)
             .await
             .expect("Error during the websocket handshake occurred");
-        info!(
-            "Upgraded {} to websocket.",
-            user.lock().unwrap().get_addr().to_string()
-        );
-        // you can do stuff here
-        let user_inbox = register_user(user.clone(), rooms.clone(), global_room_hash);
-        let (ws_sink, ws_source) = ws_stream.split();
+        info!("Websocket connection from: {}", user_addr,);
+        let (ws_sink, mut ws_source) = ws_stream.split();
+        let user_name = ws_source.next().await.unwrap().unwrap();
+        let user_id = Uuid::new_v4().as_u128();
+        let user = Arc::new(Mutex::new(User::new(
+            global_room_hash,
+            user_id,
+            false,
+            user_name.to_string(),
+        )));
 
+        let user_inbox = register_user(user.clone(), rooms.clone(), global_room_hash);
+        info!("Registered: {}", user_name.to_string());
         let (cmd_sink, cmd_source) = unbounded::<Message>();
         let (msg_sink, msg_source) = unbounded::<Message>();
         let (room_sink, room_source) = unbounded::<Message>();
+
         tokio::spawn(recv_routing_handler(
             ws_source,
             user.clone(),

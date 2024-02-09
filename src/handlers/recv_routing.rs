@@ -18,7 +18,6 @@ pub async fn recv_routing_handler(
 ) {
     let incoming = ws_source.try_for_each(|msg| {
         if msg.is_close() {
-            info!("{} disconnecting", user.lock().unwrap().get_addr());
             let rooms = room_map.lock().unwrap();
             let mut members = rooms
                 .get(&user.lock().unwrap().room)

@@ -1,19 +1,18 @@
-use std::net::SocketAddr;
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct User {
-    addr: SocketAddr,
     pub room: u64,
-    pub id: u64,
+    pub id: u128,
     pub up_to_date: bool,
+    pub name: String,
 }
 
 impl User {
-    pub fn new(addr: SocketAddr, room: u64, id: u64, up_to_date: bool) -> Self {
-        User { addr, room, id , up_to_date}
-    }
-
-    pub fn get_addr(&self) -> SocketAddr {
-        self.addr
+    pub fn new(room: u64, id: u128, up_to_date: bool, name: String) -> Self {
+        User {
+            room,
+            id,
+            up_to_date,
+            name,
+        }
     }
 }

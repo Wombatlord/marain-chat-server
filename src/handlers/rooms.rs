@@ -20,7 +20,6 @@ pub async fn room_handler(
         let mut hasher = DefaultHasher::new();
         cmd.to_text().unwrap().to_string().hash(&mut hasher);
         let room_hash = hasher.finish();
-        // let mut rooms = room_map.lock().unwrap();
         let mut rooms: std::sync::MutexGuard<'_, HashMap<u64, Room>> = room_map.lock().unwrap();
         if rooms.contains_key(&room_hash) {
             move_rooms(&rooms, &user, room_hash);
@@ -48,7 +47,7 @@ fn move_rooms(
         user.lock().unwrap().id,
         room_hash
     );
-    let u = rooms
+    let (_usr_id, (_u, channel)) = rooms
         .iter()
         .filter_map(|(_, room)| {
             room.occupants
@@ -60,12 +59,27 @@ fn move_rooms(
         .unwrap();
     user.lock().unwrap().room = room_hash;
     user.lock().unwrap().up_to_date = false;
-
     rooms
         .get(&room_hash)
         .unwrap()
         .occupants
         .lock()
         .unwrap()
-        .insert(user.lock().unwrap().id, (user.clone(), u.1 .1));
+        .insert(user.lock().unwrap().id, (user.clone(), channel.clone()));
+
+    let msg_bus = rooms.get(&room_hash).unwrap().message_bus.lock().unwrap();
+    let history = prep_message_history(msg_bus.clone());
+    channel.unbounded_send(history).unwrap();
+    user.lock().unwrap().up_to_date = true;
+}
+
+fn prep_message_history(msg_bus: VecDeque<Message>) -> Message {
+    let history = msg_bus
+        .iter()
+        .map(|m| format!("{}\n", m.to_text().unwrap()));
+    let mut history_str = String::from("");
+    for s in history {
+        history_str += &s;
+    }
+    Message::Text(history_str)
 }

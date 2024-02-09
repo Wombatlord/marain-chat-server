@@ -13,3 +13,4 @@ futures-util = "0.3.30"
 log = "0.4.20"
 tokio = { version = "1.36.0", features = ["full"] }
 tokio-tungstenite = "0.21.0"
+uuid = { version = "1.7.0", features = ["v4", "macro-diagnostics"] }
