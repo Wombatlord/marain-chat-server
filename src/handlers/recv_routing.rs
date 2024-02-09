@@ -6,7 +6,7 @@ use log::info;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
-use crate::{user::User, RoomMap};
+use crate::domain::{types::RoomMap, user::User};
 
 
 pub async fn recv_routing_handler(
@@ -23,6 +23,7 @@ pub async fn recv_routing_handler(
             let mut members = rooms
                 .get(&user.lock().unwrap().room)
                 .unwrap()
+                .occupants
                 .lock()
                 .unwrap();
             members.remove(&user.lock().unwrap().id);

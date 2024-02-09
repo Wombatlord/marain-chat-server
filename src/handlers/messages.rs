@@ -1,11 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use futures_channel::mpsc::UnboundedReceiver;
-use futures_util::{StreamExt, stream::SplitSink, SinkExt};
+use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use log::info;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
-use crate::{user::User, RoomMap};
+
+use crate::domain::{types::RoomMap, user::User};
 
 pub async fn global_message_handler(
     mut ws_sink: SplitSink<WebSocketStream<TcpStream>, Message>,
@@ -21,20 +22,35 @@ pub async fn global_message_handler(
                     break
                 }
                 let rooms = room_map.lock().unwrap();
-                let room = rooms.get(&user.lock().unwrap().room).unwrap().lock().unwrap();
-                info!("Sender Room: {}", user.lock().unwrap().room);
-                info!("Sender: {:#?}", user);
-                println!("Sender Peers: {room:#?}");
-                let receipients = room
+                let mut msg_bus = rooms.get(&user.lock().unwrap().room).unwrap().message_bus.lock().unwrap();
+                msg_bus.push_back(broadcast_msg_from_usr.clone().unwrap());
+                let history = msg_bus.iter().map(|m| format!("{}\n", m.to_text().unwrap()));
+                let mut history_str = String::from("");
+                for s in history {
+                    history_str += &s;
+                }
+                let occupants = rooms.get(&user.lock().unwrap().room).unwrap().occupants.lock().unwrap();
+                let receipients = occupants
                     .iter()
-                    .filter_map(|(mapped_user_id, (_, channel))| if mapped_user_id != &user.lock().unwrap().id { Some(channel) } else { None });
+                    .filter_map(|(mapped_user_id, (mapped_user, channel))| if mapped_user_id != &user.lock().unwrap().id { Some((mapped_user, channel)) } else { None });
+                info!("{:?}", msg_bus);
 
-
-                for receipient in receipients {
-                    match broadcast_msg_from_usr.clone() {
-                        Some(m) => receipient.unbounded_send(m).unwrap(),
-                        None => {}
+                for (receipient_user, receipient) in receipients {
+                    let utd =  receipient_user.lock().unwrap().up_to_date;
+                    match utd {
+                        true => receipient.unbounded_send(broadcast_msg_from_usr.clone().unwrap()).unwrap(),
+                        false => {
+                            receipient.unbounded_send(Message::Text(history_str.to_string())).unwrap();
+                        }
                     }
+                    receipient_user.lock().unwrap().up_to_date = true;
+
+
+
+                    // match broadcast_msg_from_usr.clone() {
+                    //     Some(m) => receipient.unbounded_send(m).unwrap(),
+                    //     None => {}
+                    // }
                 }
             }
 

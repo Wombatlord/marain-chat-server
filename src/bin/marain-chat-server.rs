@@ -1,15 +1,19 @@
-mod handlers;
-mod user;
+extern crate marain_chat_server;
+
 use env_logger;
-use futures_channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
+use futures_channel::mpsc::{unbounded, UnboundedReceiver};
 use futures_util::StreamExt;
-use handlers::{
-    commands::command_handler, messages::global_message_handler,
-    recv_routing::recv_routing_handler, rooms::room_handler,
+use marain_chat_server::{
+    domain::{room::Room, types::RoomMap, user::User},
+    handlers::{
+        commands::command_handler, messages::global_message_handler,
+        recv_routing::recv_routing_handler, rooms::room_handler,
+    },
 };
+
 use log::info;
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{hash_map::DefaultHasher, HashMap, VecDeque},
     env,
     hash::{Hash, Hasher},
     io::Error,
@@ -18,28 +22,23 @@ use std::{
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::{Message, Result};
 
-use crate::user::User;
-
-type PeerMap = Arc<Mutex<HashMap<u64, (Arc<Mutex<User>>, UnboundedSender<Message>)>>>;
-type RoomMap = Arc<Mutex<HashMap<u64, PeerMap>>>;
-
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let _ = env_logger::try_init();
     let addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+
     let rooms = RoomMap::new(Mutex::new(HashMap::new()));
+    let global_room_hash = hash(String::from("hub"));
 
-    let mut hasher = DefaultHasher::new();
-    let global_room = String::from("hub");
-    global_room.hash(&mut hasher);
-    let global_room_hash = hasher.finish();
-
-    rooms
-        .lock()
-        .unwrap()
-        .insert(global_room_hash, Arc::new(Mutex::new(HashMap::new())));
+    rooms.lock().unwrap().insert(
+        global_room_hash,
+        Room::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(VecDeque::new())),
+        ),
+    );
     // Create the event loop and TCP listener we'll accept connections on.
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind");
@@ -50,6 +49,7 @@ async fn main() -> Result<(), Error> {
             stream.peer_addr()?,
             global_room_hash,
             i,
+            false,
         )));
         i += 1;
 
@@ -67,6 +67,7 @@ async fn main() -> Result<(), Error> {
         // you can do stuff here
         let user_inbox = register_user(user.clone(), rooms.clone(), global_room_hash);
         let (ws_sink, ws_source) = ws_stream.split();
+
         let (cmd_sink, cmd_source) = unbounded::<Message>();
         let (msg_sink, msg_source) = unbounded::<Message>();
         let (room_sink, room_source) = unbounded::<Message>();
@@ -112,9 +113,16 @@ fn register_user(
         .unwrap()
         .get(&room_hash)
         .unwrap()
+        .occupants
         .lock()
         .unwrap()
         .insert(user.lock().unwrap().id, (user.clone(), user_postbox));
 
     user_inbox
+}
+
+fn hash(to_be_hashed: String) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    to_be_hashed.hash(&mut hasher);
+    hasher.finish()
 }

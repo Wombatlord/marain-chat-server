@@ -1,12 +1,12 @@
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio_tungstenite::tungstenite::Message;
 use futures_util::StreamExt;
-use crate::user::User;
-type PeerMap = Arc<Mutex<HashMap<u64, (Arc<Mutex<User>>, UnboundedSender<Message>)>>>;
-type RoomMap = Arc<Mutex<HashMap<u64, PeerMap>>>;
+use log::info;
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::domain::{types::RoomMap, user::User};
 
 pub async fn command_handler(
     mut cmd_source: UnboundedReceiver<Message>,
@@ -20,6 +20,7 @@ pub async fn command_handler(
         let room_members = room_map
             .get(&user.lock().unwrap().room)
             .unwrap()
+            .occupants
             .lock()
             .unwrap();
 
@@ -42,10 +43,16 @@ pub async fn command_handler(
                     let m = Message::Binary(Utc::now().to_string().as_bytes().to_vec());
                     commander.unbounded_send(m).unwrap()
                 }
-                "/mv" => room_sink
-                    .unbounded_send(Message::Binary(cmd_str[1].as_bytes().to_vec()))
-                    .unwrap(),
-                "/rms" => {
+                "/mv" => {
+                    info!("forwarding to room handler");
+                    room_sink
+                        .unbounded_send(Message::Binary(cmd_str[1].as_bytes().to_vec()))
+                        .unwrap()
+                }
+                // "/rms" => {
+                //     println!("Rooms: {:#?}", room_map)
+                // },
+                "/occ" => {
                     println!("Occupants: {:#?}", room_members);
                 }
                 "/crm" => {

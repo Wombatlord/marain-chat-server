@@ -1,5 +1,5 @@
 [package]
-name = "marain-chat-server"
+name = "marain_chat_server"
 version = "0.1.0"
 edition = "2021"
 
