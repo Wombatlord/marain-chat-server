@@ -5,7 +5,7 @@ use futures_channel::mpsc::{unbounded, UnboundedReceiver};
 use futures_util::StreamExt;
 use log::info;
 use marain_chat_server::{
-    domain::{room::Room, types::RoomMap, user::User, util::hash},
+    domain::{room::Room, types::LockedRoomMap, user::User, util::hash},
     handlers::{
         commands::command_handler, messages::global_message_handler,
         recv_routing::recv_routing_handler, rooms::room_handler,
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Error> {
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:8080".to_string());
 
-    let rooms = RoomMap::new(Mutex::new(HashMap::new()));
+    let rooms = LockedRoomMap::new(Mutex::new(HashMap::new()));
     let global_room_hash = hash(String::from("hub"));
 
     rooms.lock().unwrap().insert(
@@ -50,10 +50,10 @@ async fn main() -> Result<(), Error> {
             .expect("Error during the websocket handshake occurred");
         info!("Websocket connection from: {}", user_addr,);
         let (ws_sink, mut ws_source) = ws_stream.split();
-        
+
         // create & register user in landing room
         let user_name = ws_source.next().await.unwrap().unwrap();
-        let user_id = Uuid::new_v4().as_u128();
+        let user_id = format!("{:X}", Uuid::new_v4().as_u128());
         let user = Arc::new(Mutex::new(User::new(
             global_room_hash,
             user_id,
@@ -63,7 +63,7 @@ async fn main() -> Result<(), Error> {
 
         let user_inbox = register_user(user.clone(), rooms.clone(), global_room_hash);
         info!("Registered: {}", user_name.to_string());
-        
+
         // prepare channels
         let (cmd_sink, cmd_source) = unbounded::<Message>();
         let (msg_sink, msg_source) = unbounded::<Message>();
@@ -98,7 +98,7 @@ async fn main() -> Result<(), Error> {
 
 fn register_user(
     user: Arc<Mutex<User>>,
-    room: RoomMap,
+    room: LockedRoomMap,
     room_hash: u64,
 ) -> UnboundedReceiver<Message> {
     // Creates an unbounded futures_util::mpsc channel
@@ -115,9 +115,10 @@ fn register_user(
         .occupants
         .lock()
         .unwrap()
-        .insert(user.lock().unwrap().id, (user.clone(), user_postbox));
+        .insert(
+            user.lock().unwrap().id.clone(),
+            (user.clone(), user_postbox),
+        );
 
     user_inbox
 }
-
-

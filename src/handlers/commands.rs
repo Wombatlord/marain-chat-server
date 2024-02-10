@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
-};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use chrono::Utc;
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -9,13 +6,13 @@ use futures_util::StreamExt;
 use log::{error, info};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::domain::{types::RoomMap, user::User};
+use crate::domain::{types::{LockedRoomMap, PeerMap}, user::User};
 
 pub async fn command_handler(
     mut cmd_source: UnboundedReceiver<Message>,
     room_sink: UnboundedSender<Message>,
     user: Arc<Mutex<User>>,
-    room: RoomMap,
+    room: LockedRoomMap,
 ) {
     while let Some(cmd) = cmd_source.next().await {
         let room_map = room.lock().unwrap();
@@ -24,7 +21,7 @@ pub async fn command_handler(
         match current_room {
             Some(rm) => {
                 let locked_occupants = rm.occupants.lock();
-                find_commander(locked_occupants, &user, cmd, &room_sink);
+                prepare_route_command(locked_occupants, &user, cmd, &room_sink);
             }
             None => {
                 error!(
@@ -36,18 +33,20 @@ pub async fn command_handler(
     }
 }
 
-fn find_commander(
+fn prepare_route_command(
     locked_occupants: Result<
-        MutexGuard<HashMap<u128, (Arc<Mutex<User>>, UnboundedSender<Message>)>>,
-        PoisonError<MutexGuard<HashMap<u128, (Arc<Mutex<User>>, UnboundedSender<Message>)>>>,
+        MutexGuard<PeerMap>,
+        PoisonError<MutexGuard<PeerMap>>,
     >,
     user: &Arc<Mutex<User>>,
     cmd: Message,
     room_sink: &UnboundedSender<Message>,
 ) {
+    // Scans the room the user is in and gets their sink for any command with an echoed response.
+    // Calls route command with appropriate args.
     match locked_occupants {
         Ok(occupants) => {
-            let commander = occupants
+            let commander_sink = occupants
                 .iter()
                 .find_map(|(user_id, (_, c))| {
                     if user_id == &user.lock().unwrap().id {
@@ -58,7 +57,7 @@ fn find_commander(
                 })
                 .unwrap();
 
-            parse_command(cmd, commander, room_sink, occupants, user);
+            route_command(cmd, commander_sink, room_sink, occupants, user);
         }
         Err(e) => {
             error!("{e}")
@@ -66,11 +65,11 @@ fn find_commander(
     }
 }
 
-fn parse_command(
+fn route_command(
     cmd: Message,
     commander: UnboundedSender<Message>,
-    room_sink: &UnboundedSender<Message>,
-    occupants: MutexGuard<HashMap<u128, (Arc<Mutex<User>>, UnboundedSender<Message>)>>,
+    room_handler_sink: &UnboundedSender<Message>,
+    occupants: MutexGuard<PeerMap>,
     user: &Arc<Mutex<User>>,
 ) {
     if cmd.is_text() {
@@ -84,7 +83,7 @@ fn parse_command(
             }
             "/mv" => {
                 info!("forwarding to room handler");
-                room_sink
+                room_handler_sink
                     .unbounded_send(Message::Binary(cmd_str[1].as_bytes().to_vec()))
                     .unwrap_or_else(|e| error!("{}", e));
             }

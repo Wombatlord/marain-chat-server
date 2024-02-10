@@ -6,12 +6,12 @@ use log::error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
-use crate::domain::{types::RoomMap, user::User};
+use crate::domain::{types::LockedRoomMap, user::User};
 
 pub async fn global_message_handler(
     mut ws_sink: SplitSink<WebSocketStream<TcpStream>, Message>,
     mut message: UnboundedReceiver<Message>,
-    room_map: RoomMap,
+    room_map: LockedRoomMap,
     user: Arc<Mutex<User>>,
     mut user_inbox: UnboundedReceiver<Message>,
 ) {

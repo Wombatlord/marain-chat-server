@@ -6,7 +6,7 @@ use log::info;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
-use crate::domain::{types::RoomMap, user::User};
+use crate::domain::{types::LockedRoomMap, user::User};
 
 
 pub async fn recv_routing_handler(
@@ -14,7 +14,7 @@ pub async fn recv_routing_handler(
     user: Arc<Mutex<User>>,
     command_pipe: UnboundedSender<Message>,
     message_pipe: UnboundedSender<Message>,
-    room_map: RoomMap,
+    room_map: LockedRoomMap,
 ) {
     let incoming = ws_source.try_for_each(|msg| {
         if msg.is_close() {
