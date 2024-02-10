@@ -5,16 +5,15 @@ use futures_channel::mpsc::{unbounded, UnboundedReceiver};
 use futures_util::StreamExt;
 use log::info;
 use marain_chat_server::{
-    domain::{room::Room, types::RoomMap, user::User},
+    domain::{room::Room, types::RoomMap, user::User, util::hash},
     handlers::{
         commands::command_handler, messages::global_message_handler,
         recv_routing::recv_routing_handler, rooms::room_handler,
     },
 };
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap, VecDeque},
+    collections::{HashMap, VecDeque},
     env,
-    hash::{Hash, Hasher},
     io::Error,
     sync::{Arc, Mutex},
 };
@@ -51,6 +50,8 @@ async fn main() -> Result<(), Error> {
             .expect("Error during the websocket handshake occurred");
         info!("Websocket connection from: {}", user_addr,);
         let (ws_sink, mut ws_source) = ws_stream.split();
+        
+        // create & register user in landing room
         let user_name = ws_source.next().await.unwrap().unwrap();
         let user_id = Uuid::new_v4().as_u128();
         let user = Arc::new(Mutex::new(User::new(
@@ -62,10 +63,13 @@ async fn main() -> Result<(), Error> {
 
         let user_inbox = register_user(user.clone(), rooms.clone(), global_room_hash);
         info!("Registered: {}", user_name.to_string());
+        
+        // prepare channels
         let (cmd_sink, cmd_source) = unbounded::<Message>();
         let (msg_sink, msg_source) = unbounded::<Message>();
         let (room_sink, room_source) = unbounded::<Message>();
 
+        // spawn workers
         tokio::spawn(recv_routing_handler(
             ws_source,
             user.clone(),
@@ -116,8 +120,4 @@ fn register_user(
     user_inbox
 }
 
-fn hash(to_be_hashed: String) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    to_be_hashed.hash(&mut hasher);
-    hasher.finish()
-}
+

@@ -6,10 +6,10 @@ use std::{
 
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_util::StreamExt;
-use log::info;
+use log::{error, info};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::domain::{room::Room, types::RoomMap, user::User};
+use crate::domain::{room::Room, types::RoomMap, user::User, util::hash};
 
 pub async fn room_handler(
     mut room_source: UnboundedReceiver<Message>,
@@ -17,22 +17,25 @@ pub async fn room_handler(
     room_map: RoomMap,
 ) {
     while let Some(cmd) = room_source.next().await {
-        let mut hasher = DefaultHasher::new();
-        cmd.to_text().unwrap().to_string().hash(&mut hasher);
-        let room_hash = hasher.finish();
+
+        let room_hash = hash(cmd.to_text().unwrap().to_string());
+
         let mut rooms: std::sync::MutexGuard<'_, HashMap<u64, Room>> = room_map.lock().unwrap();
         if rooms.contains_key(&room_hash) {
             move_rooms(&rooms, &user, room_hash);
         } else {
             info!("attempting to create room: {} : {}", cmd, room_hash);
-            rooms.insert(
+            let created = rooms.insert(
                 room_hash,
                 Room::new(
                     Arc::new(Mutex::new(HashMap::new())),
                     Arc::new(Mutex::new(VecDeque::new())),
                 ),
             );
-            move_rooms(&rooms, &user, room_hash);
+            match created {
+                Some(_) => move_rooms(&rooms, &user, room_hash),
+                None => error!("failed to create room.")
+            }
         }
     }
 }

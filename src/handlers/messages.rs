@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use futures_channel::mpsc::UnboundedReceiver;
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
+use log::error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
@@ -36,13 +37,13 @@ pub async fn global_message_handler(
                     .filter_map(|(mapped_user_id, (_mapped_user, channel))| if mapped_user_id != &user.lock().unwrap().id { Some(channel) } else { None });
 
                 for receipient in receipients {
-                    receipient.unbounded_send(Message::Text(msg_with_sender_prefix.clone())).unwrap()
+                    receipient.unbounded_send(Message::Text(msg_with_sender_prefix.clone())).unwrap_or_else(|e| error!("{}", e))
                 }
             }
 
             broacst_msg_to_usr = user_inbox.next() => {
                 match broacst_msg_to_usr.clone() {
-                    Some(m) => ws_sink.send(m).await.unwrap(),
+                    Some(m) => ws_sink.send(m).await.unwrap_or_else(|e| error!("{}", e)),
                     None => {}
                 }
             }
