@@ -7,8 +7,8 @@ use log::info;
 use marain_chat_server::{
     domain::{room::Room, types::LockedRoomMap, user::User, util::hash},
     handlers::{
-        commands::command_handler, messages::global_message_handler,
-        recv_routing::recv_routing_handler, rooms::room_handler,
+        command_bus::{command_parser, CommandBus}, commands::command_handler, greet_handler::GreetHandler,
+        messages::global_message_handler, recv_routing::recv_routing_handler, rooms::room_handler,
     },
 };
 use std::{
@@ -64,19 +64,23 @@ async fn main() -> Result<(), Error> {
         let user_inbox = register_user(user.clone(), rooms.clone(), global_room_hash);
         info!("Registered: {}", user_name.to_string());
 
+        let mut cmd_bus = CommandBus::init();
+        cmd_bus.register_handler(GreetHandler::init());
+        tokio::spawn(command_parser(cmd_bus, ws_source));
+
         // prepare channels
         let (cmd_sink, cmd_source) = unbounded::<Message>();
         let (msg_sink, msg_source) = unbounded::<Message>();
         let (room_sink, room_source) = unbounded::<Message>();
 
         // spawn workers
-        tokio::spawn(recv_routing_handler(
-            ws_source,
-            user.clone(),
-            cmd_sink,
-            msg_sink,
-            rooms.clone(),
-        ));
+        // tokio::spawn(recv_routing_handler(
+        //     ws_source,
+        //     user.clone(),
+        //     cmd_sink,
+        //     msg_sink,
+        //     rooms.clone(),
+        // ));
         tokio::spawn(command_handler(
             cmd_source,
             room_sink,
